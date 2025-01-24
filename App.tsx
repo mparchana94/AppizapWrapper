@@ -1,227 +1,257 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, SafeAreaView, ActivityIndicator, BackHandler, Alert } from 'react-native';
-import { WebView } from 'react-native-webview';
+import React, { useEffect, useRef, useState } from 'react';
+import { SafeAreaView, StyleSheet, Text, View, Alert, Button, BackHandler} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import NetInfo from '@react-native-community/netinfo'; // Import NetInfo
+import NetInfo from '@react-native-community/netinfo';
+import { WebView } from 'react-native-webview';
 
-const CACHE_KEY = 'webviewCache';
-const JWT_TOKEN_KEY = 'jwtToken';
 const BASE_URL = 'https://v1-base.appizap.com/apps/6736efb976f2383639476046/view';
+const CACHE_KEY_PREFIX = 'webview_cache_';
 
 const App = () => {
-  const [loading, setLoading] = useState(true);
-  const [cachedContent, setCachedContent] = useState('');
+  const [cachedPage, setCachedPage] = useState<{
+    html: string;
+    resources: Record<string, string>;
+  } | null>(null);
   const [isOnline, setIsOnline] = useState(true);
-  const [jwtToken, setJwtToken] = useState<string | null>(null);
-  const webViewRef = useRef<WebView | null>(null);
+  const webViewRef = useRef(null);
+  const [hasError, setHasError] = useState(false); // Track if there's an error
+  const [reloadKey, setReloadKey] = useState(0); // Force reload with a unique key
+
+  const handleBackButton = () => {
+    Alert.alert(
+      'Exit App',
+      'Are you sure you want to exit?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'OK', onPress: () => BackHandler.exitApp() },
+      ],
+      { cancelable: false }
+    );
+    return true;
+  };
+
+  const clearAsyncStorage = async () => {
+    try {
+      await AsyncStorage.clear();
+    } catch (error) {
+      console.error('Error clearing AsyncStorage:', error);
+    }
+  };
 
   useEffect(() => {
-    loadStoredData();
-    const unsubscribeNetworkListener = setupNetworkListener();
-    const unsubscribeBackHandler = setupBackHandler();
-
+    checkNetworkStatus();
+    loadCachedContent();
+    // clearAsyncStorage();
+    const interval = setInterval(checkNetworkStatus, 5000);
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', handleBackButton);
+   
     return () => {
-      // Cleanup listeners on unmount
-      unsubscribeNetworkListener();
-      unsubscribeBackHandler();
+      clearInterval(interval);
+      backHandler.remove();
     };
   }, []);
 
-  const loadStoredData = async () => {
-    try {
-      const [cached, token] = await Promise.all([
-        AsyncStorage.getItem(CACHE_KEY),
-        AsyncStorage.getItem(JWT_TOKEN_KEY),
-      ]);
+  const checkNetworkStatus = () => {
+    NetInfo.fetch().then((state) => {
+      setIsOnline(state.isConnected ?? false);
+    }).catch((error) => {
+      console.error('Network check error:', error);
+      setIsOnline(false); // Set offline if there's an error
+    });
+  };
 
-      if (cached) setCachedContent(cached);
-      if (token) {
-        setJwtToken(token);
-        // Inject token into localStorage when WebView loads
-        injectToken(token);
+  const loadCachedContent = async () => {
+    try {
+      const cachedData = await AsyncStorage.getItem(CACHE_KEY_PREFIX + 'full_page');
+      if (cachedData) {
+        setCachedPage(JSON.parse(cachedData));
       }
     } catch (error) {
-      console.error('Error loading stored data:', error);
+      console.error('Cache loading error:', error);
     }
   };
 
-  const clearToken = async () => {
-    try {
-      await AsyncStorage.removeItem(JWT_TOKEN_KEY);
-      setJwtToken(null);
-
-      const clearScript = `
-        localStorage.removeItem('token');
-        sessionStorage.removeItem('token');
-        true;
-      `;
-      webViewRef.current?.injectJavaScript(clearScript);
-
-      webViewRef.current?.reload();
-    } catch (error) {
-      console.error('Error clearing token:', error);
-    }
-  };
-
-  const injectToken = (token: string) => {
-    const tokenInjectionScript = `
-      localStorage.setItem('token', '${token}');
-      window.originalFetch = window.fetch;
-      window.fetch = function(url, options = {}) {
-        options.headers = options.headers || {};
-        options.headers['Authorization'] = 'Bearer ${token}';
-        return window.originalFetch(url, options);
-      };
-
-      var originalXHROpen = XMLHttpRequest.prototype.open;
-      XMLHttpRequest.prototype.open = function() {
-        this.addEventListener('load', function() {
-          try {
-            const responseData = JSON.parse(this.responseText);
-            if (responseData.token || responseData.access_token) {
-              window.ReactNativeWebView.postMessage(JSON.stringify({
-                type: 'token',
-                data: responseData.token || responseData.access_token,
-              }));
-            }
-          } catch (e) {}
-        });
-        originalXHROpen.apply(this, arguments);
-        this.setRequestHeader('Authorization', 'Bearer ${token}');
-      };
-      true;
-    `;
-    webViewRef.current?.injectJavaScript(tokenInjectionScript);
-  };
-
-  const setupNetworkListener = () => {
-    // Listen for network state changes
-    const unsubscribe = NetInfo.addEventListener(state => {
-      setIsOnline(state.isConnected ?? false);
-    });
-
-    return unsubscribe; // Return the unsubscribe function for cleanup
-  };
-
-  const setupBackHandler = () => {
-    const backAction = () => {
-      Alert.alert('Hold on!', 'Are you sure you want to exit the app?', [
-        { text: 'Cancel', onPress: () => null, style: 'cancel' },
-        { text: 'YES', onPress: () => BackHandler.exitApp() },
-      ]);
-      return true;
-    };
-
-    const backHandler = BackHandler.addEventListener(
-      'hardwareBackPress',
-      backAction,
-    );
-
-    return () => backHandler.remove();
-  };
-
-  const handleLoadEnd = () => {
-    setLoading(false);
-    if (jwtToken) {
-      injectToken(jwtToken);
-    }
-  };
-
-  const cacheContent = async (content: string) => {
-    try {
-      await AsyncStorage.setItem(CACHE_KEY, content);
-    } catch (error) {
-      console.error('Caching error:', error);
-    }
-  };
-
-  const handleMessage = async (event: any) => {
+  const handleMessage = async (event: { nativeEvent: { data: string; }; }) => {
     try {
       const message = JSON.parse(event.nativeEvent.data);
+      if (message.type === 'cachePage') {
+        let modifiedHtml = message.html;
 
-      switch (message.type) {
-        case 'token':
-          const newToken = message.data;
-          setJwtToken(newToken);
-          await AsyncStorage.setItem(JWT_TOKEN_KEY, newToken);
-          injectToken(newToken);
-          break;
-        case 'logout':
-          await clearToken();
-          break;
-        default:
-          await cacheContent(event.nativeEvent.data);
+        // Replace image URLs with Base64 data
+        modifiedHtml = modifiedHtml.replace(
+          /src="(https?:\/\/[^"]+)"/g,
+          (match: any, resourceUrl: string | number) => {
+            const base64Resource = message.resources[resourceUrl];
+            if (base64Resource) {
+              return `src="data:image/png;base64,${base64Resource}"`;
+            }
+            console.warn(`Image not cached: ${resourceUrl}`);
+            return match; // Keep the original URL if not cached
+          }
+        );
+
+        // Inline CSS content
+        const cssResources = Object.entries(message.resources)
+          .filter(([url]) => url.endsWith('.css'))
+          .map(([url, content]) => `<style>${content}</style>`);
+        modifiedHtml = modifiedHtml.replace(
+          '</head>',
+          cssResources.join('\n') + '</head>'
+        );
+
+        // Save the modified page to cache
+        const pageCache = { html: modifiedHtml, resources: message.resources };
+        await AsyncStorage.setItem(CACHE_KEY_PREFIX + 'full_page', JSON.stringify(pageCache));
+        setCachedPage(pageCache);
+
+        console.log('Cached page successfully:', pageCache);
       }
     } catch (error) {
-      await cacheContent(event.nativeEvent.data);
+      console.error('Error processing cached page:', error);
     }
   };
 
   const injectedJavaScript = `
     (function() {
-      function cachePage() {
-        window.ReactNativeWebView.postMessage(document.documentElement.outerHTML);
+      function getBase64Image(url) {
+        return new Promise((resolve, reject) => {
+          const img = new Image();
+          img.crossOrigin = 'Anonymous';
+          img.onload = function() {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            const dataURL = canvas.toDataURL('image/png');
+            resolve(dataURL.replace(/^data:image\\/png;base64,/, ''));
+          };
+          img.onerror = reject;
+          img.src = url;
+        });
       }
 
-      window.addEventListener('load', () => {
-        cachePage();
-        const token = localStorage.getItem('token');
-        if (token) {
-          window.ReactNativeWebView.postMessage(JSON.stringify({
-            type: 'token',
-            data: token,
-          }));
-        }
-      });
+      async function cachePage() {
+        const resources = {};
 
-      new MutationObserver(cachePage).observe(
-        document.documentElement,
-        { childList: true, subtree: true },
-      );
+        const images = document.getElementsByTagName('img');
+        for (let img of images) {
+          if (img.src && img.src.startsWith('http')) {
+            try {
+              const base64 = await getBase64Image(img.src);
+              resources[img.src] = base64;
+            } catch (error) {
+              console.error('Failed to cache image:', img.src);
+            }
+          }
+        }
+
+        const styles = document.getElementsByTagName('link');
+        for (let style of styles) {
+          if (style.rel === 'stylesheet' && style.href.startsWith('http')) {
+            try {
+              const response = await fetch(style.href);
+              const cssText = await response.text();
+              resources[style.href] = cssText;
+            } catch (error) {
+              console.error('Failed to cache stylesheet:', style.href);
+            }
+          }
+        }
+
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'cachePage',
+          html: document.documentElement.outerHTML,
+          resources: resources
+        }));
+      }
+
+      if (document.readyState === 'complete') {
+        setTimeout(cachePage, 1000);
+      } else {
+        window.addEventListener('load', () => setTimeout(cachePage, 1000));
+      }
     })();
     true;
   `;
 
+  const getWebViewSource = () => {
+    if (isOnline) {
+      return { uri: BASE_URL };
+    } else if (cachedPage){
+      console.log('I have cached Page here')
+      return {
+        html: cachedPage.html,
+        baseUrl: BASE_URL,
+      };
+    }
+    console.log('CAChed is empty/null just check')
+    return { html: '<h1>No cached content available</h1>' };
+  };
+
+  console.log('Is Online:', isOnline);
+  console.log('Cached Page:', cachedPage);
+
+  const handleWebViewError = (syntheticEvent: any) => {
+    const { nativeEvent } = syntheticEvent;
+    console.error('WebView error: ', nativeEvent);
+    setHasError(true);
+    Alert.alert('Error', 'Failed to load the content. Please check your network.');
+    // Alert.alert('Error', `Failed to load content: ${nativeEvent.description}`);
+  };
+
+  const reloadWebView = () => {
+    setHasError(false);
+    setReloadKey((prevKey) => prevKey + 1); // Increment key to reload WebView
+  };
+
   return (
     <SafeAreaView style={styles.container}>
-      {loading && (
-        <ActivityIndicator
-          style={styles.loading}
-          size="large"
-          color="#0000ff"
-        />
-      )}
+      {hasError || (!isOnline && !cachedPage) ? (
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>Failed to load content. Please check your internet connection or try again later.</Text>
+          <Button title="Reload" onPress={reloadWebView} />
+        </View>
+      ) : (
       <WebView
         ref={webViewRef}
-        source={
-          isOnline
-            ? { uri: BASE_URL }
-            : { html: cachedContent || '<h1>No cached content available</h1>' }
-        }
-        onLoadEnd={handleLoadEnd}
+        source={getWebViewSource()}
         onMessage={handleMessage}
         injectedJavaScript={injectedJavaScript}
         javaScriptEnabled={true}
         domStorageEnabled={true}
         style={styles.webview}
+        allowFileAccess={true}
+        allowUniversalAccessFromFileURLs={true}
+        startInLoadingState={true}
+        onError={handleWebViewError} // Handle load errors
+        onHttpError={(syntheticEvent) => {
+          const { nativeEvent } = syntheticEvent;
+          console.error('HTTP error: ', nativeEvent);
+        }}
       />
+      )}
     </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    marginTop: 20,
+  container: { flex: 1 },
+  webview: { flex: 1 },
+  cacheInfo: {
+    padding: 10,
+    backgroundColor: 'lightgreen',
   },
-  webview: {
+  errorContainer: {
     flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#F8D7DA',
   },
-  loading: {
-    position: 'absolute',
-    top: '50%',
-    left: '50%',
-    transform: [{ translateX: -25 }, { translateY: -25 }],
+  errorText: {
+    fontSize: 16,
+    marginBottom: 10,
+    color: '#721C24',
   },
 });
 
