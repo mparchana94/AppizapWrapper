@@ -1,7 +1,31 @@
 # AppizapWrapper
  React Native Shells for No-Code/Low-Code React Apps
 
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+## Introduction
+
+This repository contains an implementation of WebView in a React Native application using the react-native-webview library. It provides a shell that enables No-Code/Low-Code platforms to integrate web applications into a React Native environment with minimal effort
+
+## Features
+
+- Load external web pages inside the app
+
+- Inject JavaScript into the WebView
+
+- Handle navigation events
+
+- Communicate between React Native and WebView using messages
+
+- Designed for No-Code/Low-Code platforms
+
+## Prerequisites
+
+Ensure you have the following installed:
+
+- Node.js (>= 14.x)
+
+- React Native CLI or Expo CLI (if using Expo)
+
+- Xcode (for iOS development) or Android Studio (for Android development)
 
 # Getting Started
 
